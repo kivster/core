@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any, override
 
 from homeassistant.components.sensor import (
@@ -15,12 +16,12 @@ from homeassistant.const import (
     UnitOfElectricCurrent,
     UnitOfElectricPotential,
     UnitOfTemperature,
-    UnitOfTime,
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.typing import StateType
+from homeassistant.util import dt as dt_util
 
 from . import GuardianConfigEntry
 from .const import (
@@ -58,7 +59,17 @@ class ValveControllerSensorDescription(
 ):
     """Describe a Guardian valve controller sensor."""
 
-    value_fn: Callable[[dict[str, Any]], StateType]
+    value_fn: Callable[[dict[str, Any]], StateType | datetime]
+
+
+def _valve_controller_uptime(data: dict[str, Any]) -> datetime:
+    """Return the absolute time the valve controller last booted.
+
+    The device reports uptime as whole minutes. ``SensorDeviceClass.UPTIME``
+    suppresses the small drift that comes from subtracting that coarse value
+    from the current time on every poll.
+    """
+    return dt_util.utcnow() - timedelta(minutes=data["uptime"])
 
 
 PAIRED_SENSOR_DESCRIPTIONS = (
@@ -114,11 +125,10 @@ VALVE_CONTROLLER_DESCRIPTIONS = (
     ),
     ValveControllerSensorDescription(
         key=SENSOR_KIND_UPTIME,
-        translation_key="uptime",
+        device_class=SensorDeviceClass.UPTIME,
         entity_category=EntityCategory.DIAGNOSTIC,
-        native_unit_of_measurement=UnitOfTime.MINUTES,
         api_category=API_SYSTEM_DIAGNOSTICS,
-        value_fn=lambda data: data["uptime"],
+        value_fn=_valve_controller_uptime,
     ),
     ValveControllerSensorDescription(
         key=SENSOR_KIND_TRAVEL_COUNT,
@@ -195,6 +205,6 @@ class ValveControllerSensor(ValveControllerEntity, SensorEntity):
 
     @property
     @override
-    def native_value(self) -> StateType:
+    def native_value(self) -> StateType | datetime:
         """Return the value reported by the sensor."""
         return self.entity_description.value_fn(self.coordinator.data)
