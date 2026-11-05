@@ -1,5 +1,7 @@
 """Tests for the Wemo switch entity."""
 
+from datetime import timedelta
+
 import pytest
 import pywemo
 
@@ -30,6 +32,7 @@ from homeassistant.setup import async_setup_component
 
 from . import entity_test_helpers
 from .conftest import (
+    MOCK_INSIGHT_LAST_CHANGE,
     MOCK_INSIGHT_STATE_THRESHOLD_POWER,
     async_create_wemo_entity,
     create_pywemo_device,
@@ -121,8 +124,12 @@ async def test_insight_state_attributes(hass: HomeAssistant, pywemo_registry) ->
     await async_setup_component(hass, HA_DOMAIN, {})
     with create_pywemo_device(pywemo_registry, "Insight") as insight:
         wemo_entity = await async_create_wemo_entity(hass, insight, "")
+        # Off: on_for is the completed length of the last on period.
+        last_on_started_at = MOCK_INSIGHT_LAST_CHANGE - timedelta(
+            seconds=insight.on_for
+        )
         attributes = hass.states.get(wemo_entity.entity_id).attributes
-        assert attributes[ATTR_ON_LATEST_TIME] == "00d 00h 20m 34s"
+        assert attributes[ATTR_ON_LATEST_TIME] == last_on_started_at
         assert attributes[ATTR_ON_TODAY_TIME] == "00d 01h 34m 38s"
         assert attributes[ATTR_ON_TOTAL_TIME] == "00d 02h 30m 12s"
         assert attributes[ATTR_POWER_THRESHOLD] == MOCK_INSIGHT_STATE_THRESHOLD_POWER
@@ -136,23 +143,27 @@ async def test_insight_state_attributes(hass: HomeAssistant, pywemo_registry) ->
                 blocking=True,
             )
 
-        # Test 'ON' state detail value.
+        # On: last_change is the start of the current on period, and it does
+        # not move just because wall time does.
         insight.standby_state = pywemo.StandbyState.ON
         await async_update()
         attributes = hass.states.get(wemo_entity.entity_id).attributes
         assert attributes[ATTR_CURRENT_STATE_DETAIL] == STATE_ON
+        assert attributes[ATTR_ON_LATEST_TIME] == MOCK_INSIGHT_LAST_CHANGE
 
         # Test 'STANDBY' state detail value.
         insight.standby_state = pywemo.StandbyState.STANDBY
         await async_update()
         attributes = hass.states.get(wemo_entity.entity_id).attributes
         assert attributes[ATTR_CURRENT_STATE_DETAIL] == STATE_STANDBY
+        assert attributes[ATTR_ON_LATEST_TIME] == last_on_started_at
 
         # Test 'UNKNOWN' state detail value.
         insight.standby_state = None
         await async_update()
         attributes = hass.states.get(wemo_entity.entity_id).attributes
         assert attributes[ATTR_CURRENT_STATE_DETAIL] == STATE_UNKNOWN
+        assert attributes[ATTR_ON_LATEST_TIME] == last_on_started_at
 
 
 async def test_maker_state_attributes(hass: HomeAssistant, pywemo_registry) -> None:

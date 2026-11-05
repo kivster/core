@@ -2,6 +2,7 @@
 
 from collections.abc import Generator
 import contextlib
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, create_autospec, patch
 
 import pytest
@@ -21,6 +22,7 @@ MOCK_FIRMWARE_VERSION = "WeMo_WW_2.00.XXXXX.PVT-OWRT"
 MOCK_INSIGHT_CURRENT_WATTS = 0.01
 MOCK_INSIGHT_TODAY_KWH = 3.33
 MOCK_INSIGHT_STATE_THRESHOLD_POWER = 8.0
+MOCK_INSIGHT_LAST_CHANGE = datetime(2024, 6, 1, 12, 0, tzinfo=UTC)
 
 
 @pytest.fixture(name="pywemo_model")
@@ -79,6 +81,7 @@ def create_pywemo_device(
         device.on_for = 1234
         device.today_on_time = 5678
         device.total_on_time = 9012
+        device.last_change = MOCK_INSIGHT_LAST_CHANGE
 
     if issubclass(cls, pywemo.Maker):
         device.has_sensor = 1

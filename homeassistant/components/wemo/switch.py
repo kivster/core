@@ -10,6 +10,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_OFF, STATE_ON, STATE_STANDBY, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.util import dt as dt_util
 
 from . import async_wemo_dispatcher_connect
 from .coordinator import DeviceCoordinator
@@ -29,6 +30,29 @@ ATTR_SWITCH_MODE = "switch_mode"
 
 MAKER_SWITCH_MOMENTARY = "momentary"
 MAKER_SWITCH_TOGGLE = "toggle"
+
+
+def _format_duration(seconds: int) -> str:
+    """Format a cumulative on-time duration as ``00d 00h 00m 00s``."""
+    duration = datetime(1, 1, 1) + timedelta(seconds=seconds)
+    return (
+        f"{duration.day - 1:0>2d}d {duration.hour:0>2d}h "
+        f"{duration.minute:0>2d}m {duration.second:0>2d}s"
+    )
+
+
+def _latest_on_started_at(device: Insight) -> datetime:
+    """Return when the latest on period started.
+
+    ``last_change`` is the device clock for the last state change and does not
+    drift between polls. While the load is on, that change is the start of the
+    current on period. While off or in standby, ``on_for`` is the completed
+    length of the last on period, so the start is that many seconds earlier.
+    """
+    last_change = dt_util.as_utc(device.last_change)
+    if device.standby_state == StandbyState.ON:
+        return last_change
+    return last_change - timedelta(seconds=device.on_for)
 
 
 async def async_setup_entry(
@@ -75,24 +99,15 @@ class WemoSwitch(WemoBinaryStateEntity, SwitchEntity):
             attr[ATTR_CURRENT_STATE_DETAIL] = self.detail_state
 
         if isinstance(self.wemo, Insight):
-            attr[ATTR_ON_LATEST_TIME] = self.as_uptime(self.wemo.on_for)
-            attr[ATTR_ON_TODAY_TIME] = self.as_uptime(self.wemo.today_on_time)
-            attr[ATTR_ON_TOTAL_TIME] = self.as_uptime(self.wemo.total_on_time)
+            attr[ATTR_ON_LATEST_TIME] = _latest_on_started_at(self.wemo)
+            attr[ATTR_ON_TODAY_TIME] = _format_duration(self.wemo.today_on_time)
+            attr[ATTR_ON_TOTAL_TIME] = _format_duration(self.wemo.total_on_time)
             attr[ATTR_POWER_THRESHOLD] = self.wemo.threshold_power_watts
 
         if isinstance(self.wemo, CoffeeMaker):
             attr[ATTR_COFFEMAKER_MODE] = self.wemo.mode
 
         return attr
-
-    @staticmethod
-    def as_uptime(_seconds: int) -> str:
-        """Format seconds into uptime string in the format: 00d 00h 00m 00s."""
-        uptime = datetime(1, 1, 1) + timedelta(seconds=_seconds)
-        return (
-            f"{uptime.day - 1:0>2d}d {uptime.hour:0>2d}h "
-            f"{uptime.minute:0>2d}m {uptime.second:0>2d}s"
-        )
 
     @property
     def detail_state(self) -> str:
