@@ -210,8 +210,11 @@ class DeviceCoordinator(DataUpdateCoordinator[None]):
         self, updated: bool, insight_timing: bool = False
     ) -> None:
         """Update the state by the Wemo device."""
-        # If an update is in progress, we don't do anything.
+        # InsightParams already stored on_for. The callback holding the lock
+        # publishes next, so record the sample before returning.
         if self.update_lock.locked():
+            if insight_timing:
+                self.state_sample += 1
             return
         try:
             await self._async_locked_update(not updated)

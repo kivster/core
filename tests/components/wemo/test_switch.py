@@ -1,6 +1,8 @@
 """Tests for the Wemo switch entity."""
 
+import asyncio
 from datetime import timedelta
+import threading
 from unittest.mock import MagicMock
 
 from freezegun.api import FrozenDateTimeFactory
@@ -12,6 +14,7 @@ from homeassistant.components.homeassistant import (
     SERVICE_UPDATE_ENTITY,
 )
 from homeassistant.components.switch import DOMAIN as SWITCH_DOMAIN
+from homeassistant.components.wemo.coordinator import async_get_coordinator
 from homeassistant.components.wemo.switch import (
     ATTR_CURRENT_STATE_DETAIL,
     ATTR_ON_LATEST_TIME,
@@ -319,6 +322,90 @@ async def test_insight_binary_state_subscription_keeps_on_since(
         state = hass.states.get(wemo_entity.entity_id)
         assert state is not None
         assert state.attributes[ATTR_ON_LATEST_TIME] == on_since
+
+
+async def test_insight_params_during_binary_state_updates_on_since(
+    hass: HomeAssistant,
+    pywemo_registry: MagicMock,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """InsightParams overlapped with BinaryState must still move the start.
+
+    ``subscription_update`` applies ``on_for`` before the async callback. If
+    that callback loses the update lock to an in-flight BinaryState, the
+    BinaryState path still publishes. The timing sample has to be recorded
+    first or the published attribute keeps the previous period's start.
+    """
+    start = dt_util.parse_datetime("2026-11-06T12:00:00+00:00")
+    assert start is not None
+    freezer.move_to(start)
+    await async_setup_component(hass, HA_DOMAIN, {})
+    with create_pywemo_device(pywemo_registry, "Insight") as insight:
+        wemo_entity = await async_create_wemo_entity(hass, insight, "")
+        assert wemo_entity is not None
+        assert wemo_entity.device_id is not None
+
+        async def async_update() -> None:
+            await hass.services.async_call(
+                HA_DOMAIN,
+                SERVICE_UPDATE_ENTITY,
+                {ATTR_ENTITY_ID: [wemo_entity.entity_id]},
+                blocking=True,
+            )
+
+        insight.standby_state = pywemo.StandbyState.ON
+        insight.get_state.return_value = 1
+        insight.on_for = 20
+        freezer.move_to(start + timedelta(seconds=20))
+        await async_update()
+        state = hass.states.get(wemo_entity.entity_id)
+        assert state is not None
+        assert state.attributes[ATTR_ON_LATEST_TIME] == start
+
+        coordinator = async_get_coordinator(hass, wemo_entity.device_id)
+        sample = coordinator.state_sample
+        held = asyncio.Event()
+        release = threading.Event()
+
+        def get_state(force_update: bool | None = None) -> int:
+            """Block the locked refresh until the overlapped push is delivered."""
+            if force_update is None:
+                return 1
+            hass.loop.call_soon_threadsafe(held.set)
+            release.wait(10)
+            return 1
+
+        insight.get_state = get_state
+        insight.subscription_update.return_value = True
+        try:
+            await hass.async_add_executor_job(
+                pywemo_registry.callbacks[insight.name],
+                insight,
+                "BinaryState",
+                "1",
+            )
+            async with asyncio.timeout(5):
+                await held.wait()
+            assert coordinator.update_lock.locked()
+
+            insight.on_for = 5
+            freezer.move_to(start + timedelta(seconds=50))
+            coordinator.subscription_callback(
+                insight,
+                pywemo.Insight.EVENT_TYPE_INSIGHT_PARAMS,
+                "",
+            )
+            # Let the scheduled callback run while BinaryState still holds the lock.
+            await asyncio.sleep(0)
+            assert coordinator.update_lock.locked()
+            assert coordinator.state_sample == sample + 1
+        finally:
+            release.set()
+
+        await hass.async_block_till_done(wait_background_tasks=True)
+        state = hass.states.get(wemo_entity.entity_id)
+        assert state is not None
+        assert state.attributes[ATTR_ON_LATEST_TIME] == start + timedelta(seconds=45)
 
 
 async def test_insight_on_since_advances_on_fresh_equal_on_for(
